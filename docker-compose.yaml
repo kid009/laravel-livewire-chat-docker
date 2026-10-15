@@ -1,0 +1,166 @@
+# Network for Laravel
+networks:
+  web_network:
+    name: laravel
+    driver: bridge
+
+services:
+  # PHP-FPM Application Service
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+        PHP_INI: ${PHP_INI:-php.ini-development}
+    image: laravel-app
+    container_name: laravel_app
+    restart: always
+    working_dir: /var/www
+    volumes:
+      - ./src:/var/www
+      - ./docker/php/local.ini:/usr/local/etc/php/conf.d/99-local.ini:ro
+    depends_on:
+      - db
+      - redis
+    networks:
+      - web_network
+
+  # Laravel Reverb WebSocket Server
+  reverb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+        PHP_INI: ${PHP_INI:-php.ini-development}
+    image: laravel-app
+    container_name: laravel_reverb
+    restart: always
+    working_dir: /var/www
+    command: php artisan reverb:start --host=0.0.0.0 --port=8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./src:/var/www
+      - ./docker/php/local.ini:/usr/local/etc/php/conf.d/99-local.ini:ro
+    depends_on:
+      - db
+      - redis
+    networks:
+      - web_network
+
+  # Queue Worker (สำหรับ ShouldBroadcast / Queue)
+  queue:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+        PHP_INI: ${PHP_INI:-php.ini-development}
+    image: laravel-app
+    container_name: laravel_queue
+    restart: always
+    working_dir: /var/www
+    command: php artisan queue:work --sleep=3 --tries=3
+    volumes:
+      - ./src:/var/www
+      - ./docker/php/local.ini:/usr/local/etc/php/conf.d/99-local.ini:ro
+    depends_on:
+      - db
+      - redis
+    networks:
+      - web_network
+
+  # Vite Dev Server (HMR)
+  node:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+        PHP_INI: ${PHP_INI:-php.ini-development}
+    image: laravel-app
+    container_name: laravel_node
+    # ใช้ restart: no เพื่อป้องกัน crash loop ตอนเริ่มโปรเจกต์ใหม่ (node_modules ยังไม่มี)
+    restart: "no"
+    working_dir: /var/www
+    # ติดตั้ง dependencies เฉพาะตอนยังไม่มี node_modules แล้วค่อยเปิด Vite dev server
+    # --host 0.0.0.0 จำเป็นเพื่อให้ Host เข้าถึงพอร์ต 5173 ได้
+    command: sh -c "if [ ! -d node_modules ]; then npm install; fi && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./src:/var/www
+    depends_on:
+      - app
+    networks:
+      - web_network
+
+  # MySQL Database Service
+  db:
+    image: mysql:8.0
+    container_name: laravel_mysql
+    volumes:
+      - ./mysql/data:/var/lib/mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=1234
+      - MYSQL_DATABASE=laravel_db
+      - MYSQL_USER=admin
+      - MYSQL_PASSWORD=1234
+    ports:
+      # 3310 = พอร์ตบนเครื่อง Host (ใช้กับ TablePlus/DBeaver)
+      # 3306 = พอร์ตภายใน container network (ใช้ใน .env ของ Laravel: DB_HOST=db, DB_PORT=3306)
+      - "3310:3306"
+    restart: always
+    networks:
+      - web_network
+
+  # Nginx Web Server Service
+  nginx:
+    image: nginx:1.23.1-alpine
+    container_name: laravel_nginx
+    volumes:
+      - ./src:/var/www
+      - ./nginx/conf:/etc/nginx/conf.d
+    ports:
+      - "8100:80"
+    restart: always
+    depends_on:
+      - app
+    networks:
+      - web_network
+
+  # Redis (caching / queue / broadcast)
+  # ภายใน container network ใช้ REDIS_HOST=redis, REDIS_PORT=6379
+  # (ไม่จำเป็นต้อง expose พอร์ต Redis ออกนอก host)
+  redis:
+    image: redis:6.2.1-buster
+    container_name: laravel_redis
+    volumes:
+      - ./redis/data:/data
+    restart: always
+    networks:
+      - web_network
+
+  # phpMyAdmin (MySQL management)
+  phpmyadmin:
+    image: phpmyadmin:5.1.0-apache
+    depends_on:
+      - db
+    container_name: laravel_phpmyadmin
+    environment:
+      PMA_HOST: db
+      PMA_PORT: 3306
+      PMA_USER: admin
+      PMA_PASSWORD: 1234
+    ports:
+      - 8200:80
+    restart: always
+    tty: true
+    networks:
+      - web_network
